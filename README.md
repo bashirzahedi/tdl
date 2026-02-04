@@ -1,4 +1,4 @@
-# TDL the telegram downloader
+# TDL the Farsi Telegram Downloader
 
 Download media from Telegram channels, analyze Farsi captions with Ollama AI, geocode locations with Nominatim, and organize files into bilingual folder structures.
 
