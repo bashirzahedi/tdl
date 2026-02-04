@@ -1,0 +1,382 @@
+import axios from 'axios';
+import Database from 'better-sqlite3';
+import fs from 'fs-extra';
+import path from 'path';
+import type { Config, Album, AlbumsData, Analysis, LocationInfo } from '../types.js';
+import { Logger, StatsTracker, truncateText, sleep } from '../utils.js';
+
+const OLLAMA_TIMEOUT = 30000;
+
+// Location info with admin level, population, and province
+interface LocationEntry {
+  name_en: string;
+  lat: number;
+  lon: number;
+  admin_level: number; // 0 = province, 1 = major city, 2 = city/town, 3 = neighborhood/locality
+  population: number;  // Used to prefer well-known places
+  province_code: string; // Province code for filtering (e.g., "26" for Tehran)
+}
+
+// Iran locations database (downloaded from GeoNames)
+class IranLocationsDB {
+  private db: Database.Database | null = null;
+  private locationMap: Map<string, LocationEntry> = new Map();
+  // Separate sets for fast lookup by admin level
+  private provinces: Set<string> = new Set();       // admin_level 0
+  private majorCities: Set<string> = new Set();     // admin_level 1
+  private cities: Set<string> = new Set();          // admin_level 2
+  private neighborhoods: Set<string> = new Set();   // admin_level 3
+
+  constructor(dbPath: string) {
+    if (fs.existsSync(dbPath)) {
+      this.db = new Database(dbPath, { readonly: true });
+      this.loadLocations();
+    }
+  }
+
+  private loadLocations(): void {
+    if (!this.db) return;
+
+    // For provinces (admin_level 0) and cities (admin_level 1-2): require minimum population
+    // For neighborhoods (admin_level 3): include all since population data is often missing
+    // Order: major cities (1) first, then provinces (0), then cities (2), then neighborhoods (3)
+    // This ensures "تهران" is recognized as the city, not the province
+    const rows = this.db.prepare(`
+      SELECT name_fa, name_en, latitude, longitude, admin_level, population, province_code
+      FROM locations
+      WHERE (admin_level <= 2 AND population >= ${MIN_POPULATION})
+         OR admin_level = 3
+         OR admin_level = 0
+      ORDER BY CASE admin_level WHEN 1 THEN 0 WHEN 0 THEN 1 ELSE admin_level END ASC, population DESC
+    `).all() as Array<{ name_fa: string; name_en: string; latitude: number; longitude: number; admin_level: number; population: number; province_code: string }>;
+
+    for (const row of rows) {
+      // Only store first occurrence (highest priority due to ORDER BY)
+      if (!this.locationMap.has(row.name_fa)) {
+        this.locationMap.set(row.name_fa, {
+          name_en: row.name_en,
+          lat: row.latitude,
+          lon: row.longitude,
+          admin_level: row.admin_level,
+          population: row.population || 0,
+          province_code: row.province_code || '',
+        });
+
+        // Add to appropriate set based on admin level
+        if (row.admin_level === 0) {
+          this.provinces.add(row.name_fa);
+        } else if (row.admin_level === 1) {
+          this.majorCities.add(row.name_fa);
+        } else if (row.admin_level === 2) {
+          this.cities.add(row.name_fa);
+        } else {
+          this.neighborhoods.add(row.name_fa);
+        }
+      }
+    }
+
+    console.log(`   Loaded ${this.locationMap.size} locations (${this.provinces.size} provinces, ${this.majorCities.size} major cities, ${this.cities.size} cities, ${this.neighborhoods.size} neighborhoods)`);
+  }
+
+  isLocation(word: string): boolean {
+    return this.locationMap.has(word);
+  }
+
+  isProvince(word: string): boolean {
+    return this.provinces.has(word);
+  }
+
+  isMajorCity(word: string): boolean {
+    return this.majorCities.has(word);
+  }
+
+  isCity(word: string): boolean {
+    return this.majorCities.has(word) || this.cities.has(word);
+  }
+
+  isNeighborhood(word: string): boolean {
+    return this.neighborhoods.has(word);
+  }
+
+  getAdminLevel(word: string): number | undefined {
+    return this.locationMap.get(word)?.admin_level;
+  }
+
+  getEnglishName(persianName: string): string | undefined {
+    return this.locationMap.get(persianName)?.name_en;
+  }
+
+  getCoordinates(persianName: string): { lat: number; lon: number } | undefined {
+    const loc = this.locationMap.get(persianName);
+    if (loc) return { lat: loc.lat, lon: loc.lon };
+    return undefined;
+  }
+
+  getPopulation(persianName: string): number {
+    return this.locationMap.get(persianName)?.population || 0;
+  }
+
+  getProvinceCode(persianName: string): string {
+    return this.locationMap.get(persianName)?.province_code || '';
+  }
+
+  isAvailable(): boolean {
+    return this.db !== null;
+  }
+
+  close(): void {
+    this.db?.close();
+  }
+}
+
+// Minimum population for a place to be considered (filters out tiny villages)
+const MIN_POPULATION = 1000;
+
+// Foreign countries - used for English translation when AI detects foreign location
+const FOREIGN_COUNTRIES = new Map<string, string>([
+  // Countries only (not cities - cities could be mentioned in context of Iran news)
+  ['فرانسه', 'France'], ['آلمان', 'Germany'], ['انگلستان', 'UK'], ['انگلیس', 'UK'],
+  ['ایتالیا', 'Italy'], ['اسپانیا', 'Spain'], ['هلند', 'Netherlands'],
+  ['بلژیک', 'Belgium'], ['سوئیس', 'Switzerland'], ['اتریش', 'Austria'],
+  ['یونان', 'Greece'], ['پرتغال', 'Portugal'], ['سوئد', 'Sweden'],
+  ['نروژ', 'Norway'], ['دانمارک', 'Denmark'], ['فنلاند', 'Finland'],
+  ['لهستان', 'Poland'], ['چک', 'Czech'], ['اوکراین', 'Ukraine'],
+  ['روسیه', 'Russia'], ['آمریکا', 'USA'], ['امریکا', 'USA'],
+  ['ایالات متحده', 'USA'], ['کانادا', 'Canada'], ['مکزیک', 'Mexico'],
+  ['برزیل', 'Brazil'], ['چین', 'China'], ['ژاپن', 'Japan'],
+  ['کره', 'Korea'], ['هند', 'India'], ['پاکستان', 'Pakistan'],
+  ['افغانستان', 'Afghanistan'], ['عراق', 'Iraq'], ['ترکیه', 'Turkey'],
+  ['امارات', 'UAE'], ['عربستان', 'Saudi Arabia'], ['قطر', 'Qatar'],
+  ['کویت', 'Kuwait'], ['بحرین', 'Bahrain'], ['اسرائیل', 'Israel'],
+  ['فلسطین', 'Palestine'], ['لبنان', 'Lebanon'], ['سوریه', 'Syria'],
+  ['اردن', 'Jordan'], ['مصر', 'Egypt'], ['استرالیا', 'Australia'],
+  ['نیوزیلند', 'New Zealand'],
+]);
+
+interface OllamaResponse {
+  response: string;
+  done: boolean;
+}
+
+export interface AnalyzeOptions {
+  resume: boolean;
+  dryRun: boolean;
+}
+
+function buildPrompt(caption: string, telegramDate: string): string {
+  return `Analyze this Farsi caption and extract location information.
+
+Caption: "${truncateText(caption, 4000)}"
+Telegram date: ${telegramDate}
+
+TASK: Extract the MAIN location this event happened in.
+
+LOCATION RULES:
+1. Find the Iranian city where the event took place (تهران، مشهد، اصفهان، شیراز، تبریز، رشت، کرج، قم، اهواز، کرمانشاه، etc.)
+2. If a neighborhood/street/area is mentioned, extract it too (نارمک، صادقیه، ونک، اشرفی اصفهانی، etc.)
+3. The location words MUST appear in the caption - don't guess
+4. If location is outside Iran (آمریکا، فرانسه، etc.), set is_foreign: true
+5. Common phrases like "بنا بر"، "حوالی"، "نرسیده به" are NOT locations
+
+EXAMPLES:
+- "تیراندازی در مشهد" → city_fa: "مشهد"
+- "اشرفی اصفهانی، تهران" → city_fa: "تهران", area_fa: "اشرفی اصفهانی"
+- "نارمک تهران" → city_fa: "تهران", area_fa: "نارمک"
+- "کهریزک تهران" → city_fa: "تهران", area_fa: "کهریزک"
+- "اعتراضات در پاریس" → is_foreign: true, foreign_location: "پاریس"
+
+Respond ONLY with valid JSON:
+{
+  "dates": ["۱۸ دی"],
+  "locations": {
+    "city_fa": "تهران",
+    "area_fa": "نارمک"
+  },
+  "is_foreign": false,
+  "confidence": 0.9
+}
+
+- dates: array of Persian dates found (or empty [])
+- locations: object with city_fa and optionally area_fa (or empty {})
+- is_foreign: true if event is outside Iran
+- confidence: 0.0 to 1.0`;
+}
+
+async function queryOllama(config: Config, prompt: string): Promise<Analysis | null> {
+  try {
+    const response = await axios.post<OllamaResponse>(
+      `${config.ollama.url}/api/generate`,
+      {
+        model: config.ollama.modelAnalyze,
+        prompt,
+        stream: false,
+        format: 'json',
+        options: {
+          temperature: 0.1,
+          num_predict: 500,
+        },
+      },
+      {
+        timeout: OLLAMA_TIMEOUT,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+
+    const text = response.data.response.trim();
+
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return null;
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    return {
+      dates: Array.isArray(parsed.dates) ? parsed.dates : [],
+      locations: typeof parsed.locations === 'object' ? parsed.locations : {},
+      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
+      raw_response: text,
+    };
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error(`   Ollama error: ${errorMsg}`);
+    return null;
+  }
+}
+
+export async function analyze(config: Config, options: AnalyzeOptions): Promise<void> {
+  const logger = new Logger(config.paths.raw);
+  const stats = new StatsTracker();
+
+  const albumsPath = path.join(config.paths.raw, 'albums.json');
+  const locationsDBPath = path.join(process.cwd(), 'data', 'iran-locations.sqlite');
+
+  if (!await fs.pathExists(albumsPath)) {
+    console.error('✗ No albums.json found. Run download first.');
+    process.exit(1);
+  }
+
+  const albumsData: AlbumsData = await fs.readJson(albumsPath);
+  const locationsDB = new IranLocationsDB(locationsDBPath);
+
+  if (!locationsDB.isAvailable()) {
+    console.log('⚠️  Iran locations database not found.');
+    console.log('   Run: npx tsx scripts/download-locations.ts');
+    console.log('   Falling back to AI-only location detection.\n');
+  }
+
+  console.log('🔍 Starting analysis with Ollama...');
+  console.log(`   Model: ${config.ollama.modelAnalyze}`);
+  console.log(`   Albums to analyze: ${albumsData.albums.length}`);
+  console.log(`   Dry run: ${options.dryRun}`);
+
+  let analyzed = 0;
+  let skipped = 0;
+
+  for (const album of albumsData.albums) {
+    if (options.resume && album.analysis) {
+      skipped++;
+      continue;
+    }
+
+    if (!album.caption_fa || album.caption_fa.trim() === '') {
+      album.analysis = {
+        dates: [],
+        locations: {},
+        confidence: 0,
+      };
+      logger.log('analyze', 'warning', 'Empty caption, skipping analysis', album.album_id);
+      stats.increment('warnings');
+      analyzed++;
+      continue;
+    }
+
+    if (options.dryRun) {
+      console.log(`   [DRY RUN] Would analyze: ${album.album_id}`);
+      console.log(`   Caption preview: ${album.caption_fa.substring(0, 100)}...`);
+      analyzed++;
+      continue;
+    }
+
+    const prompt = buildPrompt(album.caption_fa, album.telegram_date);
+    const analysis = await queryOllama(config, prompt);
+
+    if (analysis) {
+      // AI is primary - use its extracted locations
+      const aiLocations = analysis.locations as Record<string, string>;
+      const finalLocations: Partial<LocationInfo> = {};
+
+      // Check if AI marked this as foreign
+      const isForeign = (analysis as unknown as { is_foreign?: boolean }).is_foreign;
+
+      if (isForeign) {
+        // Foreign location - put in "Other" category
+        finalLocations.country_fa = 'سایر';
+        finalLocations.country_en = 'Other';
+        if (aiLocations.city_fa || aiLocations.foreign_location) {
+          finalLocations.city_fa = aiLocations.city_fa || aiLocations.foreign_location;
+          // Try to get English name from FOREIGN_COUNTRIES map
+          const foreignEn = FOREIGN_COUNTRIES.get(finalLocations.city_fa || '');
+          finalLocations.city_en = foreignEn || finalLocations.city_fa;
+        }
+      } else {
+        // Iran location - add English names from database
+        if (aiLocations.city_fa) {
+          finalLocations.city_fa = aiLocations.city_fa;
+          finalLocations.city_en = locationsDB.getEnglishName(aiLocations.city_fa) || aiLocations.city_fa;
+        }
+        if (aiLocations.area_fa) {
+          finalLocations.area_fa = aiLocations.area_fa;
+          finalLocations.area_en = locationsDB.getEnglishName(aiLocations.area_fa) || aiLocations.area_fa;
+        }
+        if (aiLocations.province_fa) {
+          finalLocations.province_fa = aiLocations.province_fa;
+          finalLocations.province_en = locationsDB.getEnglishName(aiLocations.province_fa) || aiLocations.province_fa;
+        }
+      }
+
+      analysis.locations = finalLocations;
+      album.analysis = analysis;
+
+      const locationCount = Object.keys(analysis.locations).length;
+      logger.log('analyze', 'success',
+        `Analyzed: ${analysis.dates.length} dates, ${locationCount} locations, confidence ${analysis.confidence.toFixed(2)}`,
+        album.album_id
+      );
+
+      if (analysis.confidence < 0.5) {
+        stats.increment('low_confidence');
+      }
+    } else {
+      album.analysis = {
+        dates: [],
+        locations: {},
+        confidence: 0,
+      };
+      logger.log('analyze', 'error', 'Failed to get analysis', album.album_id);
+      stats.increment('errors');
+    }
+
+    analyzed++;
+    stats.increment('albums_total');
+
+    if (analyzed % 10 === 0) {
+      console.log(`   Analyzed ${analyzed}/${albumsData.albums.length - skipped}...`);
+      await fs.writeJson(albumsPath, albumsData, { spaces: 2 });
+    }
+
+    await sleep(500);
+  }
+
+  locationsDB.close();
+
+  if (!options.dryRun) {
+    await fs.writeJson(albumsPath, albumsData, { spaces: 2 });
+    await logger.save();
+  }
+
+  console.log(`\n✓ Analysis complete`);
+  console.log(`   Analyzed: ${analyzed}`);
+  console.log(`   Skipped (already done): ${skipped}`);
+  stats.print();
+}
