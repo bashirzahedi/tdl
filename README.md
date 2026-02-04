@@ -1,12 +1,13 @@
 # TDL the Farsi Telegram Downloader
 
-Download media from Telegram channels, analyze Farsi captions with Ollama AI, geocode locations with Nominatim, and organize files into bilingual folder structures.
+Download media from Telegram channels, analyze Farsi captions with AI (Ollama, OpenAI, or Claude), geocode locations with Nominatim, and organize files into bilingual folder structures.
 
 ## Features
 
 - **Preview** scan channel to see file counts, sizes, and time estimates before downloading
 - **Download** media (photos, videos) from Telegram channels with GramJS
-- **Analyze** Farsi captions to extract dates (Jalali/relative) and locations using Ollama
+- **Analyze** Farsi captions to extract dates (Jalali/relative) and locations using AI
+- **Multiple AI Providers** - Choose between Ollama (local/free), OpenAI/ChatGPT, or Claude
 - **Convert** Jalali and relative dates (دیروز, جمعه) to Gregorian
 - **Geocode** locations via Nominatim with SQLite caching
 - **Organize** files into bilingual folders: `ایران__Iran/تهران__Tehran/...`
@@ -14,7 +15,10 @@ Download media from Telegram channels, analyze Farsi captions with Ollama AI, ge
 ## Prerequisites
 
 - Node.js 18+
-- [Ollama](https://ollama.ai) running locally
+- One of the following AI providers:
+  - [Ollama](https://ollama.ai) running locally (free)
+  - [OpenAI API key](https://platform.openai.com/api-keys) (paid)
+  - [Claude API key](https://console.anthropic.com/) (paid)
 - Telegram API credentials from [my.telegram.org](https://my.telegram.org)
 
 ## Installation
@@ -23,9 +27,30 @@ Download media from Telegram channels, analyze Farsi captions with Ollama AI, ge
 npm install
 ```
 
-## Ollama Models
+## AI Providers
 
-The quality of location detection and translation depends heavily on the model. Here are the recommended models for Farsi:
+TDL supports three AI providers for Farsi text analysis and translation:
+
+| Provider | Type | Cost | Best For |
+|----------|------|------|----------|
+| **Ollama** | Local | Free | Privacy, no API costs, offline use |
+| **OpenAI** | Cloud | Paid | Best quality, fast responses |
+| **Claude** | Cloud | Paid | Excellent Farsi, nuanced analysis |
+
+### Quick Comparison
+
+| Provider | Model | Farsi Quality | Speed | Cost |
+|----------|-------|---------------|-------|------|
+| OpenAI | `gpt-4o` | ⭐⭐⭐⭐⭐ | Fast | ~$0.005/album |
+| OpenAI | `gpt-4o-mini` | ⭐⭐⭐⭐ | Very Fast | ~$0.0005/album |
+| Claude | `claude-sonnet-4-20250514` | ⭐⭐⭐⭐⭐ | Fast | ~$0.003/album |
+| Claude | `claude-3-5-haiku-20241022` | ⭐⭐⭐⭐ | Very Fast | ~$0.001/album |
+| Ollama | `aya:35b` | ⭐⭐⭐⭐⭐ | Slow | Free |
+| Ollama | `aya:8b` | ⭐⭐⭐⭐ | Medium | Free |
+
+## Ollama Models (Local AI)
+
+If using Ollama, the quality depends heavily on the model. Here are the recommended models for Farsi:
 
 ### Recommended Models
 
@@ -69,15 +94,55 @@ cp .env.example .env
 
 Edit `.env` with your credentials:
 
+### Using Ollama (Local/Free)
+
 ```env
 TELEGRAM_API_ID=12345678
 TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789
 TELEGRAM_CHANNEL=@yourchannel
 TELEGRAM_DATE_FROM=2026-01-01T00:00:00Z
 TELEGRAM_DATE_TO=2026-01-27T23:59:59Z
+
+# AI Provider
+AI_PROVIDER=ollama
 OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL_ANALYZE=aya:35b       # Best for Farsi (or aya:8b for less RAM)
-OLLAMA_MODEL_TRANSLATE=aya:35b     # Best for Farsi (or aya:8b for less RAM)
+OLLAMA_MODEL_ANALYZE=aya:35b
+OLLAMA_MODEL_TRANSLATE=aya:35b
+
+NOMINATIM_USER_AGENT=TDownloader/1.0
+```
+
+### Using OpenAI/ChatGPT
+
+```env
+TELEGRAM_API_ID=12345678
+TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789
+TELEGRAM_CHANNEL=@yourchannel
+TELEGRAM_DATE_FROM=2026-01-01T00:00:00Z
+TELEGRAM_DATE_TO=2026-01-27T23:59:59Z
+
+# AI Provider
+AI_PROVIDER=openai
+OPENAI_API_KEY=sk-your-api-key-here
+OPENAI_MODEL=gpt-4o-mini    # or gpt-4o for best quality
+
+NOMINATIM_USER_AGENT=TDownloader/1.0
+```
+
+### Using Claude
+
+```env
+TELEGRAM_API_ID=12345678
+TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789
+TELEGRAM_CHANNEL=@yourchannel
+TELEGRAM_DATE_FROM=2026-01-01T00:00:00Z
+TELEGRAM_DATE_TO=2026-01-27T23:59:59Z
+
+# AI Provider
+AI_PROVIDER=claude
+CLAUDE_API_KEY=sk-ant-your-api-key-here
+CLAUDE_MODEL=claude-sonnet-4-20250514    # or claude-3-5-haiku-20241022 for faster/cheaper
+
 NOMINATIM_USER_AGENT=TDownloader/1.0
 ```
 
@@ -106,7 +171,7 @@ npm run tdownloader preview
 # Download media from Telegram
 npm run tdownloader download
 
-# Analyze captions with Ollama
+# Analyze captions with AI (uses configured provider)
 npm run tdownloader analyze
 
 # Resolve dates (Jalali/relative → Gregorian)
@@ -216,6 +281,8 @@ output/                           # Organized files
 | Telegram | 1 request/sec |
 | Nominatim | 1 request/sec (strict) |
 | Ollama | 30s timeout |
+| OpenAI | 30s timeout (API rate limits apply) |
+| Claude | 30s timeout (API rate limits apply) |
 
 ## License
 

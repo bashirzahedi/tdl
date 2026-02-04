@@ -1,38 +1,8 @@
-import axios from 'axios';
 import fs from 'fs-extra';
 import path from 'path';
 import type { Config, Album, AlbumsData, LocationInfo } from '../types.js';
 import { Logger, StatsTracker, safeName, bilingualFolderName, formatDateForFolder, sleep } from '../utils.js';
-
-async function translateToEnglish(
-  config: Config,
-  text: string
-): Promise<string> {
-  if (!text || text.trim() === '') return '';
-
-  try {
-    const response = await axios.post(
-      `${config.ollama.url}/api/generate`,
-      {
-        model: config.ollama.modelTranslate,
-        prompt: `Translate this Farsi text to English. Only output the translation, nothing else:\n\n${text.substring(0, 500)}`,
-        stream: false,
-        options: {
-          temperature: 0.1,
-          num_predict: 200,
-        },
-      },
-      {
-        timeout: 15000,
-        headers: { 'Content-Type': 'application/json' },
-      }
-    );
-
-    return response.data.response.trim();
-  } catch {
-    return '';
-  }
-}
+import { translateText } from '../ai-provider.js';
 
 function buildLocationPath(loc: LocationInfo): string {
   const parts: string[] = [];
@@ -175,7 +145,7 @@ export async function organize(config: Config, options: OrganizeOptions): Promis
         'utf-8'
       );
 
-      const captionEn = await translateToEnglish(config, album.caption_fa);
+      const captionEn = await translateText(config, album.caption_fa);
       if (captionEn) {
         await fs.writeFile(
           path.join(finalAlbumPath, 'caption_en.txt'),

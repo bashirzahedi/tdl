@@ -1,11 +1,9 @@
-import axios from 'axios';
 import Database from 'better-sqlite3';
 import fs from 'fs-extra';
 import path from 'path';
 import type { Config, Album, AlbumsData, Analysis, LocationInfo } from '../types.js';
 import { Logger, StatsTracker, truncateText, sleep } from '../utils.js';
-
-const OLLAMA_TIMEOUT = 30000;
+import { queryAI, parseAnalysisResponse, getProviderDisplayName } from '../ai-provider.js';
 
 // Location info with admin level, population, and province
 interface LocationEntry {
@@ -153,11 +151,6 @@ const FOREIGN_COUNTRIES = new Map<string, string>([
   ['نیوزیلند', 'New Zealand'],
 ]);
 
-interface OllamaResponse {
-  response: string;
-  done: boolean;
-}
-
 export interface AnalyzeOptions {
   resume: boolean;
   dryRun: boolean;
@@ -202,48 +195,6 @@ Respond ONLY with valid JSON:
 - confidence: 0.0 to 1.0`;
 }
 
-async function queryOllama(config: Config, prompt: string): Promise<Analysis | null> {
-  try {
-    const response = await axios.post<OllamaResponse>(
-      `${config.ollama.url}/api/generate`,
-      {
-        model: config.ollama.modelAnalyze,
-        prompt,
-        stream: false,
-        format: 'json',
-        options: {
-          temperature: 0.1,
-          num_predict: 500,
-        },
-      },
-      {
-        timeout: OLLAMA_TIMEOUT,
-        headers: { 'Content-Type': 'application/json' },
-      }
-    );
-
-    const text = response.data.response.trim();
-
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return null;
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]);
-
-    return {
-      dates: Array.isArray(parsed.dates) ? parsed.dates : [],
-      locations: typeof parsed.locations === 'object' ? parsed.locations : {},
-      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
-      raw_response: text,
-    };
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error(`   Ollama error: ${errorMsg}`);
-    return null;
-  }
-}
-
 export async function analyze(config: Config, options: AnalyzeOptions): Promise<void> {
   const logger = new Logger(config.paths.raw);
   const stats = new StatsTracker();
@@ -265,8 +216,8 @@ export async function analyze(config: Config, options: AnalyzeOptions): Promise<
     console.log('   Falling back to AI-only location detection.\n');
   }
 
-  console.log('🔍 Starting analysis with Ollama...');
-  console.log(`   Model: ${config.ollama.modelAnalyze}`);
+  console.log(`🔍 Starting analysis with ${getProviderDisplayName(config.ai.provider)}...`);
+  console.log(`   Model: ${config.ai.model}`);
   console.log(`   Albums to analyze: ${albumsData.albums.length}`);
   console.log(`   Dry run: ${options.dryRun}`);
 
@@ -299,7 +250,12 @@ export async function analyze(config: Config, options: AnalyzeOptions): Promise<
     }
 
     const prompt = buildPrompt(album.caption_fa, album.telegram_date);
-    const analysis = await queryOllama(config, prompt);
+    const aiResponse = await queryAI(config, prompt, 500);
+    const analysis = aiResponse.success ? parseAnalysisResponse(aiResponse.text) : null;
+
+    if (!aiResponse.success && aiResponse.error) {
+      console.error(`   ${aiResponse.error}`);
+    }
 
     if (analysis) {
       // AI is primary - use its extracted locations

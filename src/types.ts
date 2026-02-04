@@ -72,6 +72,8 @@ export interface Stats {
   warnings: number;
 }
 
+export type AIProviderType = 'ollama' | 'openai' | 'claude';
+
 export interface Config {
   telegram: {
     apiId: number;
@@ -80,10 +82,22 @@ export interface Config {
     dateFrom: Date;
     dateTo: Date;
   };
+  ai: {
+    provider: AIProviderType;
+    model: string;
+  };
   ollama: {
     url: string;
     modelAnalyze: string;
     modelTranslate: string;
+  };
+  openai?: {
+    apiKey: string;
+    baseUrl?: string;
+  };
+  claude?: {
+    apiKey: string;
+    baseUrl?: string;
   };
   nominatim: {
     userAgent: string;
