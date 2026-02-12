@@ -13,7 +13,7 @@ const program = new Command();
 
 program
   .name('tdownloader')
-  .description('Telegram albums → Ollama Farsi analysis → Nominatim → bilingual folders')
+  .description('Telegram albums → AI Farsi analysis → Nominatim → bilingual folders')
   .version('1.0.0');
 
 program
@@ -51,11 +51,30 @@ program
 
 program
   .command('analyze')
-  .description('Analyze captions with Ollama (Farsi → dates/locations)')
+  .description('Analyze captions with AI (Farsi → dates/locations)')
   .option('--resume', 'Skip already analyzed albums', false)
   .option('--dry-run', 'Preview without analyzing', false)
+  .option('--provider <name>', 'Override AI provider (ollama, openai, claude, gemini, openai-compat)')
   .action(async (options) => {
     const config = loadConfig();
+    if (options.provider) {
+      const valid = ['ollama', 'openai', 'claude', 'gemini', 'openai-compat'];
+      const p = options.provider.toLowerCase();
+      if (!valid.includes(p)) {
+        console.error(`✗ Unknown provider "${options.provider}". Use: ${valid.join(', ')}`);
+        process.exit(1);
+      }
+      config.ai.provider = p as typeof config.ai.provider;
+      // Update display model to match the overridden provider
+      const providerModelMap: Record<string, string> = {
+        ollama: config.ollama.modelAnalyze,
+        openai: config.openai?.model || 'gpt-4o-mini',
+        claude: config.claude?.model || 'claude-sonnet-4-20250514',
+        gemini: config.gemini?.model || 'gemini-2.0-flash',
+        'openai-compat': config.openaiCompat?.model || '',
+      };
+      config.ai.model = providerModelMap[p] || config.ai.model;
+    }
     await analyze(config, {
       resume: options.resume,
       dryRun: options.dryRun,
@@ -75,7 +94,7 @@ program
 
 program
   .command('geocode')
-  .description('Geocode locations with Nominatim')
+  .description('Geocode locations with local DB + AI translation')
   .option('--resume', 'Skip already geocoded albums', false)
   .option('--dry-run', 'Preview without geocoding', false)
   .action(async (options) => {

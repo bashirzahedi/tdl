@@ -1,13 +1,15 @@
 # TDL the Farsi Telegram Downloader
 
-Download media from Telegram channels, analyze Farsi captions with AI (Ollama, OpenAI, or Claude), geocode locations with Nominatim, and organize files into bilingual folder structures.
+Download media from Telegram channels, analyze Farsi captions with AI, geocode locations with Nominatim, and organize files into bilingual folder structures.
 
 ## Features
 
 - **Preview** scan channel to see file counts, sizes, and time estimates before downloading
 - **Download** media (photos, videos) from Telegram channels with GramJS
 - **Analyze** Farsi captions to extract dates (Jalali/relative) and locations using AI
-- **Multiple AI Providers** - Choose between Ollama (local/free), OpenAI/ChatGPT, or Claude
+- **5 AI Providers** - Ollama (local/free), OpenAI, Claude, Google Gemini, or any OpenAI-compatible API (Groq, Together, OpenRouter, LM Studio)
+- **Retry & Fallback** - automatic retries with exponential backoff, plus provider fallback chains
+- **Parallel Processing** - cloud providers analyze 3 albums concurrently
 - **Convert** Jalali and relative dates (دیروز, جمعه) to Gregorian
 - **Geocode** locations via Nominatim with SQLite caching
 - **Organize** files into bilingual folders: `ایران__Iran/تهران__Tehran/...`
@@ -19,6 +21,8 @@ Download media from Telegram channels, analyze Farsi captions with AI (Ollama, O
   - [Ollama](https://ollama.ai) running locally (free)
   - [OpenAI API key](https://platform.openai.com/api-keys) (paid)
   - [Claude API key](https://console.anthropic.com/) (paid)
+  - [Google Gemini API key](https://aistudio.google.com/apikey) (free tier available)
+  - Any OpenAI-compatible API (Groq, Together AI, OpenRouter, LM Studio)
 - Telegram API credentials from [my.telegram.org](https://my.telegram.org)
 
 ## Installation
@@ -29,13 +33,15 @@ npm install
 
 ## AI Providers
 
-TDL supports three AI providers for Farsi text analysis and translation:
+TDL supports five AI providers for Farsi text analysis and translation:
 
 | Provider | Type | Cost | Best For |
 |----------|------|------|----------|
 | **Ollama** | Local | Free | Privacy, no API costs, offline use |
 | **OpenAI** | Cloud | Paid | Best quality, fast responses |
 | **Claude** | Cloud | Paid | Excellent Farsi, nuanced analysis |
+| **Gemini** | Cloud | Free tier | Good quality, generous free quota |
+| **OpenAI-Compatible** | Cloud | Varies | Groq (free), Together, OpenRouter, LM Studio |
 
 ### Quick Comparison
 
@@ -45,6 +51,8 @@ TDL supports three AI providers for Farsi text analysis and translation:
 | OpenAI | `gpt-4o-mini` | ⭐⭐⭐⭐ | Very Fast | ~$0.0005/album |
 | Claude | `claude-sonnet-4-20250514` | ⭐⭐⭐⭐⭐ | Fast | ~$0.003/album |
 | Claude | `claude-3-5-haiku-20241022` | ⭐⭐⭐⭐ | Very Fast | ~$0.001/album |
+| Gemini | `gemini-2.0-flash` | ⭐⭐⭐⭐ | Very Fast | Free (limits) |
+| Groq | `llama-3.3-70b-versatile` | ⭐⭐⭐⭐ | Fastest | Free (limits) |
 | Ollama | `aya:35b` | ⭐⭐⭐⭐⭐ | Slow | Free |
 | Ollama | `aya:8b` | ⭐⭐⭐⭐ | Medium | Free |
 
@@ -103,7 +111,6 @@ TELEGRAM_CHANNEL=@yourchannel
 TELEGRAM_DATE_FROM=2026-01-01T00:00:00Z
 TELEGRAM_DATE_TO=2026-01-27T23:59:59Z
 
-# AI Provider
 AI_PROVIDER=ollama
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL_ANALYZE=aya:35b
@@ -115,35 +122,64 @@ NOMINATIM_USER_AGENT=TDownloader/1.0
 ### Using OpenAI/ChatGPT
 
 ```env
-TELEGRAM_API_ID=12345678
-TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789
-TELEGRAM_CHANNEL=@yourchannel
-TELEGRAM_DATE_FROM=2026-01-01T00:00:00Z
-TELEGRAM_DATE_TO=2026-01-27T23:59:59Z
-
-# AI Provider
 AI_PROVIDER=openai
 OPENAI_API_KEY=sk-your-api-key-here
 OPENAI_MODEL=gpt-4o-mini    # or gpt-4o for best quality
-
-NOMINATIM_USER_AGENT=TDownloader/1.0
 ```
 
 ### Using Claude
 
 ```env
-TELEGRAM_API_ID=12345678
-TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789
-TELEGRAM_CHANNEL=@yourchannel
-TELEGRAM_DATE_FROM=2026-01-01T00:00:00Z
-TELEGRAM_DATE_TO=2026-01-27T23:59:59Z
-
-# AI Provider
 AI_PROVIDER=claude
 CLAUDE_API_KEY=sk-ant-your-api-key-here
 CLAUDE_MODEL=claude-sonnet-4-20250514    # or claude-3-5-haiku-20241022 for faster/cheaper
+```
 
-NOMINATIM_USER_AGENT=TDownloader/1.0
+### Using Google Gemini
+
+```env
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your-gemini-api-key-here
+GEMINI_MODEL=gemini-2.0-flash    # or gemini-1.5-pro for best quality
+```
+
+### Using Groq (Free, Fast)
+
+```env
+AI_PROVIDER=groq
+OPENAI_COMPAT_API_KEY=your-groq-api-key
+OPENAI_COMPAT_BASE_URL=https://api.groq.com/openai/v1/chat/completions
+OPENAI_COMPAT_MODEL=llama-3.3-70b-versatile
+```
+
+### Using Together AI
+
+```env
+AI_PROVIDER=together
+OPENAI_COMPAT_API_KEY=your-together-api-key
+OPENAI_COMPAT_BASE_URL=https://api.together.xyz/v1/chat/completions
+OPENAI_COMPAT_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo
+```
+
+### Using OpenRouter
+
+```env
+AI_PROVIDER=openrouter
+OPENAI_COMPAT_API_KEY=your-openrouter-api-key
+OPENAI_COMPAT_BASE_URL=https://openrouter.ai/api/v1/chat/completions
+OPENAI_COMPAT_MODEL=meta-llama/llama-3.3-70b-instruct
+```
+
+### Retry & Fallback Configuration
+
+```env
+# Retry up to 3 times on transient errors (429, 5xx, timeouts)
+AI_MAX_RETRIES=3
+AI_RETRY_DELAY_MS=1000
+AI_TIMEOUT_MS=60000
+
+# If primary provider fails, try these in order
+AI_FALLBACK_PROVIDERS=openai,gemini
 ```
 
 ## Usage
@@ -174,6 +210,9 @@ npm run tdownloader download
 # Analyze captions with AI (uses configured provider)
 npm run tdownloader analyze
 
+# Analyze with a specific provider (overrides .env)
+npm run tdownloader analyze -- --provider gemini
+
 # Resolve dates (Jalali/relative → Gregorian)
 npm run tdownloader resolve
 
@@ -192,14 +231,15 @@ npm run tdownloader all
 
 ### Options
 
-| Flag | Description |
-|------|-------------|
-| `--resume` | Skip already processed albums |
-| `--dry-run` | Preview without making changes |
-| `--metadata-only` | Fetch captions only, skip media downloads |
-| `--keep-raw` | Keep raw files after organizing |
-| `--date-from <date>` | Override start date (ISO format) |
-| `--date-to <date>` | Override end date (ISO format) |
+| Flag | Command | Description |
+|------|---------|-------------|
+| `--resume` | all, download, analyze, geocode, organize | Skip already processed albums |
+| `--dry-run` | all commands | Preview without making changes |
+| `--metadata-only` | download, organize | Fetch captions only, skip media files |
+| `--keep-raw` | organize, all | Keep raw files after organizing |
+| `--provider <name>` | analyze | Override AI provider for this run |
+| `--date-from <date>` | download, preview, all | Override start date (ISO format) |
+| `--date-to <date>` | download, preview, all | Override end date (ISO format) |
 
 Examples:
 
@@ -218,6 +258,9 @@ npm run tdownloader all -- --metadata-only
 
 # Preview without changes
 npm run tdownloader all -- --dry-run
+
+# Analyze with Gemini instead of configured provider
+npm run tdownloader analyze -- --provider gemini
 ```
 
 ### Preview Output Example
@@ -274,15 +317,17 @@ output/                           # Organized files
 └── log.json
 ```
 
-## Rate Limits
+## Rate Limits & Reliability
 
-| Service | Limit |
-|---------|-------|
-| Telegram | 1 request/sec |
-| Nominatim | 1 request/sec (strict) |
-| Ollama | 30s timeout |
-| OpenAI | 30s timeout (API rate limits apply) |
-| Claude | 30s timeout (API rate limits apply) |
+| Service | Limit | Notes |
+|---------|-------|-------|
+| Telegram | 1 req/sec | Built-in rate limiter |
+| Nominatim | 1 req/sec | OSM policy, cached in SQLite |
+| AI Providers | Configurable | Default: 60s timeout, 3 retries with exponential backoff |
+| Cloud AI | 3 concurrent | Parallel batch processing for cloud providers |
+| Ollama | 1 sequential | Local resource constraint |
+
+Transient errors (429 rate limits, 5xx server errors, timeouts) are automatically retried. Auth errors (401/403) fail immediately. If a provider fails after all retries, the fallback chain kicks in.
 
 ## License
 

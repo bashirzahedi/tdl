@@ -1,5 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
+import { glob } from 'glob';
 import type { Config, Album, AlbumsData, LocationInfo } from '../types.js';
 import { Logger, StatsTracker, safeName, bilingualFolderName, formatDateForFolder, sleep } from '../utils.js';
 import { translateText } from '../ai-provider.js';
@@ -65,12 +66,8 @@ export async function organize(config: Config, options: OrganizeOptions): Promis
   for (const album of albumsData.albums) {
     const albumFolderName = `album_${safeName(album.album_id)}`;
 
-    const existingMetaPath = path.join(config.paths.output, '**', albumFolderName, 'meta.json');
-    const existingFolders = await fs.pathExists(path.join(config.paths.output, albumFolderName));
-
     if (options.resume) {
-      const glob = await import('glob');
-      const matches = await glob.glob(`**/album_${safeName(album.album_id)}/meta.json`, {
+      const matches = await glob(`**/album_${safeName(album.album_id)}/meta.json`, {
         cwd: config.paths.output,
       });
       if (matches.length > 0) {
@@ -152,6 +149,9 @@ export async function organize(config: Config, options: OrganizeOptions): Promis
           captionEn,
           'utf-8'
         );
+      } else {
+        logger.log('organize', 'warning', 'Translation failed, no caption_en.txt created', album.album_id);
+        stats.increment('warnings');
       }
     }
 

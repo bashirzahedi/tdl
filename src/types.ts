@@ -28,7 +28,7 @@ export interface Analysis {
 export interface ResolvedDates {
   gregorian: string;
   jalali: string;
-  source: 'jalali' | 'relative' | 'telegram_fallback';
+  source: 'jalali' | 'relative' | 'caption' | 'telegram_fallback';
 }
 
 export interface Album {
@@ -72,7 +72,7 @@ export interface Stats {
   warnings: number;
 }
 
-export type AIProviderType = 'ollama' | 'openai' | 'claude';
+export type AIProviderType = 'ollama' | 'openai' | 'claude' | 'gemini' | 'openai-compat';
 
 export interface Config {
   telegram: {
@@ -85,6 +85,10 @@ export interface Config {
   ai: {
     provider: AIProviderType;
     model: string;
+    maxRetries: number;
+    retryDelayMs: number;
+    timeoutMs: number;
+    fallbackProviders: AIProviderType[];
   };
   ollama: {
     url: string;
@@ -94,10 +98,21 @@ export interface Config {
   openai?: {
     apiKey: string;
     baseUrl?: string;
+    model: string;
   };
   claude?: {
     apiKey: string;
     baseUrl?: string;
+    model: string;
+  };
+  gemini?: {
+    apiKey: string;
+    model: string;
+  };
+  openaiCompat?: {
+    apiKey: string;
+    baseUrl: string;
+    model: string;
   };
   nominatim: {
     userAgent: string;

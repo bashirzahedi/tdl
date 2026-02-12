@@ -154,6 +154,7 @@ const FOREIGN_COUNTRIES = new Map<string, string>([
 export interface AnalyzeOptions {
   resume: boolean;
   dryRun: boolean;
+  provider?: string;
 }
 
 function buildPrompt(caption: string, telegramDate: string): string {
@@ -195,6 +196,79 @@ Respond ONLY with valid JSON:
 - confidence: 0.0 to 1.0`;
 }
 
+// Process a single album's AI response and enrich with location DB
+function processAnalysisResult(
+  album: Album,
+  aiResponse: { text: string; success: boolean; error?: string },
+  locationsDB: IranLocationsDB,
+  logger: Logger,
+  stats: StatsTracker
+): void {
+  const analysis = aiResponse.success ? parseAnalysisResponse(aiResponse.text) : null;
+
+  if (!aiResponse.success && aiResponse.error) {
+    console.error(`   ${aiResponse.error}`);
+  }
+
+  if (analysis) {
+    const aiLocations = analysis.locations as Record<string, string>;
+    const finalLocations: Partial<LocationInfo> = {};
+
+    const isForeign = (analysis as unknown as { is_foreign?: boolean }).is_foreign;
+
+    if (isForeign) {
+      finalLocations.country_fa = 'سایر';
+      finalLocations.country_en = 'Other';
+      if (aiLocations.city_fa || aiLocations.foreign_location) {
+        finalLocations.city_fa = aiLocations.city_fa || aiLocations.foreign_location;
+        const foreignEn = FOREIGN_COUNTRIES.get(finalLocations.city_fa || '');
+        finalLocations.city_en = foreignEn || finalLocations.city_fa;
+      }
+    } else {
+      if (aiLocations.city_fa) {
+        finalLocations.city_fa = aiLocations.city_fa;
+        finalLocations.city_en = locationsDB.getEnglishName(aiLocations.city_fa) || aiLocations.city_fa;
+      }
+      if (aiLocations.area_fa) {
+        finalLocations.area_fa = aiLocations.area_fa;
+        finalLocations.area_en = locationsDB.getEnglishName(aiLocations.area_fa) || aiLocations.area_fa;
+      }
+      if (aiLocations.province_fa) {
+        finalLocations.province_fa = aiLocations.province_fa;
+        finalLocations.province_en = locationsDB.getEnglishName(aiLocations.province_fa) || aiLocations.province_fa;
+      }
+    }
+
+    analysis.locations = finalLocations;
+    album.analysis = analysis;
+
+    const locationCount = Object.keys(analysis.locations).length;
+    logger.log('analyze', 'success',
+      `Analyzed: ${analysis.dates.length} dates, ${locationCount} locations, confidence ${analysis.confidence.toFixed(2)}`,
+      album.album_id
+    );
+
+    if (analysis.confidence < 0.5) {
+      stats.increment('low_confidence');
+    }
+  } else {
+    album.analysis = {
+      dates: [],
+      locations: {},
+      confidence: 0,
+    };
+    logger.log('analyze', 'error', 'Failed to get analysis', album.album_id);
+    stats.increment('errors');
+  }
+
+  stats.increment('albums_total');
+}
+
+// Concurrency: 1 for Ollama (local resources), 3 for cloud providers
+function getConcurrency(provider: string): number {
+  return provider === 'ollama' ? 1 : 3;
+}
+
 export async function analyze(config: Config, options: AnalyzeOptions): Promise<void> {
   const logger = new Logger(config.paths.raw);
   const stats = new StatsTracker();
@@ -216,13 +290,22 @@ export async function analyze(config: Config, options: AnalyzeOptions): Promise<
     console.log('   Falling back to AI-only location detection.\n');
   }
 
+  const concurrency = getConcurrency(config.ai.provider);
+
   console.log(`🔍 Starting analysis with ${getProviderDisplayName(config.ai.provider)}...`);
   console.log(`   Model: ${config.ai.model}`);
+  if (config.ai.fallbackProviders.length > 0) {
+    console.log(`   Fallbacks: ${config.ai.fallbackProviders.map(getProviderDisplayName).join(' → ')}`);
+  }
+  console.log(`   Retries: ${config.ai.maxRetries}, Timeout: ${config.ai.timeoutMs}ms`);
+  console.log(`   Concurrency: ${concurrency}`);
   console.log(`   Albums to analyze: ${albumsData.albums.length}`);
   console.log(`   Dry run: ${options.dryRun}`);
 
-  let analyzed = 0;
+  // Separate albums into: skip, empty caption, and to-analyze
+  const toAnalyze: Album[] = [];
   let skipped = 0;
+  let emptyCount = 0;
 
   for (const album of albumsData.albums) {
     if (options.resume && album.analysis) {
@@ -238,101 +321,71 @@ export async function analyze(config: Config, options: AnalyzeOptions): Promise<
       };
       logger.log('analyze', 'warning', 'Empty caption, skipping analysis', album.album_id);
       stats.increment('warnings');
-      analyzed++;
+      emptyCount++;
       continue;
     }
 
     if (options.dryRun) {
       console.log(`   [DRY RUN] Would analyze: ${album.album_id}`);
       console.log(`   Caption preview: ${album.caption_fa.substring(0, 100)}...`);
-      analyzed++;
       continue;
     }
 
-    const prompt = buildPrompt(album.caption_fa, album.telegram_date);
-    const aiResponse = await queryAI(config, prompt, 500);
-    const analysis = aiResponse.success ? parseAnalysisResponse(aiResponse.text) : null;
+    toAnalyze.push(album);
+  }
 
-    if (!aiResponse.success && aiResponse.error) {
-      console.error(`   ${aiResponse.error}`);
+  if (options.dryRun) {
+    console.log(`\n✓ Dry run complete`);
+    console.log(`   Would analyze: ${toAnalyze.length}`);
+    console.log(`   Skipped (already done): ${skipped}`);
+    console.log(`   Empty captions: ${emptyCount}`);
+    locationsDB.close();
+    return;
+  }
+
+  // Process albums in batches
+  let analyzed = 0;
+  const total = toAnalyze.length;
+
+  for (let i = 0; i < total; i += concurrency) {
+    const batch = toAnalyze.slice(i, i + concurrency);
+
+    // Fire all requests in the batch concurrently
+    const results = await Promise.all(
+      batch.map(album => {
+        const prompt = buildPrompt(album.caption_fa, album.telegram_date);
+        return queryAI(config, prompt, 500);
+      })
+    );
+
+    // Process results and enrich with location DB
+    for (let j = 0; j < batch.length; j++) {
+      processAnalysisResult(batch[j], results[j], locationsDB, logger, stats);
     }
 
-    if (analysis) {
-      // AI is primary - use its extracted locations
-      const aiLocations = analysis.locations as Record<string, string>;
-      const finalLocations: Partial<LocationInfo> = {};
+    analyzed += batch.length;
 
-      // Check if AI marked this as foreign
-      const isForeign = (analysis as unknown as { is_foreign?: boolean }).is_foreign;
+    // Save after every batch to prevent data loss
+    await fs.writeJson(albumsPath, albumsData, { spaces: 2 });
 
-      if (isForeign) {
-        // Foreign location - put in "Other" category
-        finalLocations.country_fa = 'سایر';
-        finalLocations.country_en = 'Other';
-        if (aiLocations.city_fa || aiLocations.foreign_location) {
-          finalLocations.city_fa = aiLocations.city_fa || aiLocations.foreign_location;
-          // Try to get English name from FOREIGN_COUNTRIES map
-          const foreignEn = FOREIGN_COUNTRIES.get(finalLocations.city_fa || '');
-          finalLocations.city_en = foreignEn || finalLocations.city_fa;
-        }
-      } else {
-        // Iran location - add English names from database
-        if (aiLocations.city_fa) {
-          finalLocations.city_fa = aiLocations.city_fa;
-          finalLocations.city_en = locationsDB.getEnglishName(aiLocations.city_fa) || aiLocations.city_fa;
-        }
-        if (aiLocations.area_fa) {
-          finalLocations.area_fa = aiLocations.area_fa;
-          finalLocations.area_en = locationsDB.getEnglishName(aiLocations.area_fa) || aiLocations.area_fa;
-        }
-        if (aiLocations.province_fa) {
-          finalLocations.province_fa = aiLocations.province_fa;
-          finalLocations.province_en = locationsDB.getEnglishName(aiLocations.province_fa) || aiLocations.province_fa;
-        }
-      }
-
-      analysis.locations = finalLocations;
-      album.analysis = analysis;
-
-      const locationCount = Object.keys(analysis.locations).length;
-      logger.log('analyze', 'success',
-        `Analyzed: ${analysis.dates.length} dates, ${locationCount} locations, confidence ${analysis.confidence.toFixed(2)}`,
-        album.album_id
-      );
-
-      if (analysis.confidence < 0.5) {
-        stats.increment('low_confidence');
-      }
-    } else {
-      album.analysis = {
-        dates: [],
-        locations: {},
-        confidence: 0,
-      };
-      logger.log('analyze', 'error', 'Failed to get analysis', album.album_id);
-      stats.increment('errors');
+    if (analyzed % 10 === 0 || analyzed === total) {
+      console.log(`   Analyzed ${analyzed}/${total}...`);
     }
 
-    analyzed++;
-    stats.increment('albums_total');
-
-    if (analyzed % 10 === 0) {
-      console.log(`   Analyzed ${analyzed}/${albumsData.albums.length - skipped}...`);
-      await fs.writeJson(albumsPath, albumsData, { spaces: 2 });
+    // Rate limit between batches (not needed for Ollama since concurrency=1 handles pacing)
+    if (config.ai.provider !== 'ollama' && i + concurrency < total) {
+      await sleep(500);
     }
-
-    await sleep(500);
   }
 
   locationsDB.close();
 
-  if (!options.dryRun) {
-    await fs.writeJson(albumsPath, albumsData, { spaces: 2 });
-    await logger.save();
-  }
+  await fs.writeJson(albumsPath, albumsData, { spaces: 2 });
+  await logger.save();
 
   console.log(`\n✓ Analysis complete`);
   console.log(`   Analyzed: ${analyzed}`);
   console.log(`   Skipped (already done): ${skipped}`);
+  console.log(`   Empty captions: ${emptyCount}`);
   stats.print();
 }

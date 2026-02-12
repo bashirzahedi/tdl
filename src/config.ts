@@ -20,6 +20,8 @@ function getAIProvider(): AIProviderType {
   const provider = process.env['AI_PROVIDER']?.toLowerCase();
   if (provider === 'openai' || provider === 'chatgpt') return 'openai';
   if (provider === 'claude' || provider === 'anthropic') return 'claude';
+  if (provider === 'gemini' || provider === 'google') return 'gemini';
+  if (provider === 'openai-compat' || provider === 'groq' || provider === 'together' || provider === 'openrouter' || provider === 'lmstudio') return 'openai-compat';
   return 'ollama';
 }
 
@@ -29,10 +31,23 @@ function getDefaultModel(provider: AIProviderType): string {
       return process.env['OPENAI_MODEL'] || 'gpt-4o-mini';
     case 'claude':
       return process.env['CLAUDE_MODEL'] || 'claude-sonnet-4-20250514';
+    case 'gemini':
+      return process.env['GEMINI_MODEL'] || 'gemini-2.0-flash';
+    case 'openai-compat':
+      return process.env['OPENAI_COMPAT_MODEL'] || '';
     case 'ollama':
     default:
       return process.env['OLLAMA_MODEL_ANALYZE'] || 'aya:35b';
   }
+}
+
+function parseFallbackProviders(envVal?: string): AIProviderType[] {
+  if (!envVal) return [];
+  const valid: AIProviderType[] = ['ollama', 'openai', 'claude', 'gemini', 'openai-compat'];
+  return envVal
+    .split(',')
+    .map(s => s.trim().toLowerCase() as AIProviderType)
+    .filter(s => valid.includes(s));
 }
 
 export function loadConfig(overrides?: Partial<{
@@ -55,6 +70,10 @@ export function loadConfig(overrides?: Partial<{
     ai: {
       provider: aiProvider,
       model: getDefaultModel(aiProvider),
+      maxRetries: parseInt(getEnv('AI_MAX_RETRIES', '3'), 10),
+      retryDelayMs: parseInt(getEnv('AI_RETRY_DELAY_MS', '1000'), 10),
+      timeoutMs: parseInt(getEnv('AI_TIMEOUT_MS', '60000'), 10),
+      fallbackProviders: parseFallbackProviders(process.env['AI_FALLBACK_PROVIDERS']),
     },
     ollama: {
       url: getEnv('OLLAMA_URL', 'http://localhost:11434'),
@@ -76,6 +95,7 @@ export function loadConfig(overrides?: Partial<{
     config.openai = {
       apiKey: openaiKey,
       baseUrl: process.env['OPENAI_BASE_URL'],
+      model: process.env['OPENAI_MODEL'] || 'gpt-4o-mini',
     };
   }
 
@@ -85,6 +105,27 @@ export function loadConfig(overrides?: Partial<{
     config.claude = {
       apiKey: claudeKey,
       baseUrl: process.env['CLAUDE_BASE_URL'],
+      model: process.env['CLAUDE_MODEL'] || 'claude-sonnet-4-20250514',
+    };
+  }
+
+  // Add Gemini config if API key is set
+  const geminiKey = process.env['GEMINI_API_KEY'];
+  if (geminiKey) {
+    config.gemini = {
+      apiKey: geminiKey,
+      model: process.env['GEMINI_MODEL'] || 'gemini-2.0-flash',
+    };
+  }
+
+  // Add OpenAI-compatible config if key and URL are set
+  const compatKey = process.env['OPENAI_COMPAT_API_KEY'];
+  const compatUrl = process.env['OPENAI_COMPAT_BASE_URL'];
+  if (compatKey && compatUrl) {
+    config.openaiCompat = {
+      apiKey: compatKey,
+      baseUrl: compatUrl,
+      model: process.env['OPENAI_COMPAT_MODEL'] || '',
     };
   }
 

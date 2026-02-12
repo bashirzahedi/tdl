@@ -40,8 +40,22 @@ export async function download(config: Config, options: DownloadOptions): Promis
 
   const session = await getSession();
   const client = new TelegramClient(session, config.telegram.apiId, config.telegram.apiHash, {
-    connectionRetries: 5,
+    connectionRetries: 10,
+    retryDelay: 2000,
+    autoReconnect: true,
+    timeout: 60,
   });
+
+  // Catch GramJS background update loop errors (non-fatal timeouts)
+  const unhandledRejection = (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('TIMEOUT') || msg.includes('CONNECTION_NOT_INITED')) {
+      console.log('   ⚠ Telegram connection hiccup, auto-reconnecting...');
+    } else {
+      console.error('   Unhandled error:', msg);
+    }
+  };
+  process.on('unhandledRejection', unhandledRejection);
 
   await client.start({
     phoneNumber: async () => await input.text('Phone number: '),
@@ -159,19 +173,30 @@ export async function download(config: Config, options: DownloadOptions): Promis
       await fs.ensureDir(rawDatePath);
       await rateLimiter.wait();
 
-      try {
-        const buffer = await client.downloadMedia(message, {});
-        if (buffer) {
-          await fs.writeFile(filePath, buffer);
-          const fileSize = (buffer as Buffer).length;
-          stats.increment('files_size_bytes', fileSize);
-          stats.increment('files_total');
-          logger.log('download', 'success', `Downloaded ${relativePath}`, albumId);
+      let downloaded = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const buffer = await client.downloadMedia(message, {});
+          if (buffer) {
+            await fs.writeFile(filePath, buffer);
+            const fileSize = (buffer as Buffer).length;
+            stats.increment('files_size_bytes', fileSize);
+            stats.increment('files_total');
+            logger.log('download', 'success', `Downloaded ${relativePath}`, albumId);
+            downloaded = true;
+            break;
+          }
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          if (attempt < 2) {
+            const delay = 2000 * (attempt + 1);
+            console.log(`   Retry ${attempt + 1}/3 for ${relativePath}: ${errorMsg}`);
+            await sleep(delay);
+          } else {
+            logger.log('download', 'error', `Failed after 3 attempts: ${errorMsg}`, albumId);
+            stats.increment('errors');
+          }
         }
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        logger.log('download', 'error', `Failed to download: ${errorMsg}`, albumId);
-        stats.increment('errors');
       }
     } else {
       console.log(`   [DRY RUN] Would download: ${relativePath}`);
@@ -181,6 +206,18 @@ export async function download(config: Config, options: DownloadOptions): Promis
     processedCount++;
     if (processedCount % 50 === 0) {
       console.log(`   Processed ${processedCount} messages...`);
+
+      // Incremental save to prevent data loss on crash
+      if (!options.dryRun) {
+        const currentAlbums = Array.from(albumsMap.values()).filter(a => a.items.length > 0);
+        const saveData = { ...albumsData };
+        saveData.albums = options.resume
+          ? [...albumsData.albums, ...currentAlbums]
+          : currentAlbums;
+        saveData.downloaded_at = new Date().toISOString();
+        await fs.ensureDir(config.paths.raw);
+        await fs.writeJson(albumsPath, saveData, { spaces: 2 });
+      }
     }
   }
 
@@ -202,6 +239,7 @@ export async function download(config: Config, options: DownloadOptions): Promis
   }
 
   await client.disconnect();
+  process.removeListener('unhandledRejection', unhandledRejection);
 
   console.log('\n✓ Download complete');
   stats.print();
