@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import path from 'path';
 import { Command } from 'commander';
 import { loadConfig } from './config.js';
 import { download } from './commands/download.js';
@@ -112,8 +113,12 @@ program
   .option('--dry-run', 'Preview without moving files', false)
   .option('--metadata-only', 'Create folders and captions only, skip file moving', false)
   .option('--keep-raw', 'Keep raw files after organizing', false)
+  .option('--extra-output <path>', 'Copy organized files to an additional directory')
   .action(async (options) => {
     const config = loadConfig();
+    if (options.extraOutput) {
+      config.paths.extraOutput = path.resolve(options.extraOutput);
+    }
     await organize(config, {
       resume: options.resume,
       dryRun: options.dryRun,
@@ -129,6 +134,7 @@ program
   .option('--dry-run', 'Preview all steps without making changes', false)
   .option('--metadata-only', 'Fetch metadata only, skip media downloads and organize', false)
   .option('--keep-raw', 'Keep raw files after organizing', false)
+  .option('--extra-output <path>', 'Copy organized files to an additional directory')
   .option('--date-from <date>', 'Override start date (ISO format)')
   .option('--date-to <date>', 'Override end date (ISO format)')
   .action(async (options) => {
@@ -136,6 +142,9 @@ program
       dateFrom: options.dateFrom,
       dateTo: options.dateTo,
     });
+    if (options.extraOutput) {
+      config.paths.extraOutput = path.resolve(options.extraOutput);
+    }
 
     console.log('🚀 Starting full pipeline...\n');
 

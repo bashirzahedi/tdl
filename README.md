@@ -117,6 +117,9 @@ OLLAMA_MODEL_ANALYZE=aya:35b
 OLLAMA_MODEL_TRANSLATE=aya:35b
 
 NOMINATIM_USER_AGENT=TDownloader/1.0
+
+# Optional: copy organized files to a second directory
+# EXTRA_OUTPUT_DIR=/mnt/nas/photos
 ```
 
 ### Using OpenAI/ChatGPT
@@ -237,6 +240,7 @@ npm run tdownloader all
 | `--dry-run` | all commands | Preview without making changes |
 | `--metadata-only` | download, organize | Fetch captions only, skip media files |
 | `--keep-raw` | organize, all | Keep raw files after organizing |
+| `--extra-output <path>` | organize, all | Copy organized files to an additional directory |
 | `--provider <name>` | analyze | Override AI provider for this run |
 | `--date-from <date>` | download, preview, all | Override start date (ISO format) |
 | `--date-to <date>` | download, preview, all | Override end date (ISO format) |
@@ -261,6 +265,12 @@ npm run tdownloader all -- --dry-run
 
 # Analyze with Gemini instead of configured provider
 npm run tdownloader analyze -- --provider gemini
+
+# Organize and copy to a second folder
+npm run tdownloader organize -- --extra-output /mnt/nas/photos
+
+# Full pipeline with extra output
+npm run tdownloader all -- --resume --extra-output /mnt/nas/photos
 ```
 
 ### Preview Output Example

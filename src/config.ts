@@ -86,6 +86,9 @@ export function loadConfig(overrides?: Partial<{
     paths: {
       raw: path.resolve(process.cwd(), 'raw'),
       output: path.resolve(process.cwd(), 'output'),
+      extraOutput: process.env['EXTRA_OUTPUT_DIR']
+        ? path.resolve(process.env['EXTRA_OUTPUT_DIR'])
+        : undefined,
     },
   };
 

@@ -120,6 +120,7 @@ export interface Config {
   paths: {
     raw: string;
     output: string;
+    extraOutput?: string;
   };
 }
 

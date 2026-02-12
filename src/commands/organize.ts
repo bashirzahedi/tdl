@@ -59,6 +59,9 @@ export async function organize(config: Config, options: OrganizeOptions): Promis
   console.log(`   Dry run: ${options.dryRun}`);
   console.log(`   Keep raw: ${options.keepRaw}`);
   console.log(`   Metadata only: ${options.metadataOnly}`);
+  if (config.paths.extraOutput) {
+    console.log(`   Extra output: ${config.paths.extraOutput}`);
+  }
 
   let organized = 0;
   let skipped = 0;
@@ -171,6 +174,14 @@ export async function organize(config: Config, options: OrganizeOptions): Promis
       type: item.type,
     }));
     await fs.writeJson(path.join(finalAlbumPath, 'items.json'), items, { spaces: 2 });
+
+    // Copy to extra output directory if configured
+    if (config.paths.extraOutput) {
+      const relPath = path.relative(config.paths.output, finalAlbumPath);
+      const extraAlbumPath = path.join(config.paths.extraOutput, relPath);
+      await fs.ensureDir(extraAlbumPath);
+      await fs.copy(finalAlbumPath, extraAlbumPath, { overwrite: true });
+    }
 
     logger.log('organize', 'success',
       `Organized ${album.items.length} files → ${path.relative(config.paths.output, finalAlbumPath)}`,
